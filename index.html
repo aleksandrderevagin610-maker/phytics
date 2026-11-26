@@ -169,11 +169,11 @@ body:has(dialog[open]){overflow:hidden}
 .photo-report ul{display:grid;list-style:none;gap:7px;padding:0;margin:0}
 .photo-result{background:#fff;border:1px solid var(--line);border-left:4px solid #8791ad;border-radius:8px;padding:8px 10px;overflow-wrap:anywhere}
 .photo-result[data-status=good]{border-left-color:#418e76}
-.photo-result:not([data-status=good],[data-status=missing]){border-left-color:#bc6b43}
+.photo-result:not([data-status=good],[data-status=missing],[data-status=uncertain]){border-left-color:#bc6b43}
 .photo-result>div{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:2px 10px;font-size:.93rem}
 .photo-result>div span{color:#5b6582;font-weight:650;font-size:.88rem}
 .photo-result[data-status=good]>div span{color:#175b46}
-.photo-result:not([data-status=good],[data-status=missing])>div span{color:#8e3528}
+.photo-result:not([data-status=good],[data-status=missing],[data-status=uncertain])>div span{color:#8e3528}
 .photo-result blockquote,.photo-body .photo-result p{margin:4px 0 0;font-size:.9rem}
 .photo-result blockquote{background:#f2f5fb;padding:4px 7px;border-radius:5px;white-space:pre-wrap}
 .photo-result p{color:var(--muted)}
@@ -246,23 +246,26 @@ body:has(dialog[open]){overflow:hidden}
     <details id="photo-check" class="reveal photo-check">
       <summary>Проверить решение по фото</summary>
       <div class="photo-body">
-        <form id="photo-form">
-          <label for="photo-file">Фото решения</label>
-          <p class="photo-help" id="photo-file-help">Сними страницу целиком при хорошем свете. Фото обрабатывается в браузере.</p>
-          <input id="photo-file" type="file" accept="image/*" aria-describedby="photo-file-help">
-          <img id="photo-preview" alt="Загруженное фото решения" hidden>
-          <button id="photo-read" type="button" class="secondary" disabled>Распознать запись</button>
-          <p id="photo-status" class="photo-status" role="status" aria-atomic="true"></p>
-          <label for="photo-text">Запись для проверки</label>
-          <p id="photo-text-help" class="photo-help">Сверь распознанные строки или введи формулы вручную. Подписывай величины, например <code>I_AB = 5/2 А</code>.</p>
-          <textarea id="photo-text" rows="5" maxlength="14000" aria-describedby="photo-text-help" spellcheck="false" autocapitalize="off"></textarea>
-          <button id="photo-submit" class="primary" type="submit">Проверить по критериям</button>
-        </form>
+        <label for="photo-file">Фото решения</label>
+        <p class="photo-help" id="photo-file-help">Выбери фото страницы. Проверка запустится сразу в браузере.</p>
+        <input id="photo-file" type="file" accept="image/*" aria-describedby="photo-file-help">
+        <p id="photo-status" class="photo-status" role="status" aria-atomic="true"></p>
+        <button id="photo-read" type="button" class="secondary" hidden>Повторить проверку фото</button>
         <section id="photo-report" class="photo-report" aria-labelledby="photo-report-summary" hidden>
           <h3 id="photo-report-summary" tabindex="-1"></h3>
-          <p class="photo-help">Проверка сверяет найденные записи с учебными критериями. Она может пропустить другой способ решения или строку, которую не удалось прочитать.</p>
+          <p id="photo-report-help" class="photo-help"></p>
           <ul id="photo-results"></ul>
         </section>
+        <details class="photo-chat" id="photo-editor">
+          <summary>Открыть и исправить запись</summary>
+          <img id="photo-preview" alt="Загруженное фото решения" hidden>
+          <form id="photo-form">
+            <label for="photo-text">Запись для проверки</label>
+            <p id="photo-text-help" class="photo-help">Сверь формулы с фото или введи их вручную. Пример записи <code>I_AB = 5/2 А</code>.</p>
+            <textarea id="photo-text" rows="5" maxlength="14000" aria-describedby="photo-text-help" spellcheck="false" autocapitalize="off"></textarea>
+            <button id="photo-submit" class="primary" type="submit">Проверить этот текст</button>
+          </form>
+        </details>
         <details class="photo-chat" id="photo-chat-panel">
           <summary>Разобрать всё решение в ChatGPT</summary>
           <p class="photo-help">В чате можно проверить схему, направления токов и ход рассуждений. Скопируй задание с критериями и приложи фото в чате.</p>
@@ -701,7 +704,7 @@ const photoText = $("photo-text");
 const photoRead = $("photo-read");
 const photoSubmit = $("photo-submit");
 const photoStatus = $("photo-status");
-let selectedPhoto = null;
+let photoReady = false;
 let photoUrl = "";
 let photoWork = null;
 let ocrLibrary;
@@ -722,7 +725,7 @@ function stripMarkup(text) {
 
 function matchAlias(rule, line) {
   const terms = rule.aliases.map(normalizePhotoText).sort((a, b) => b.length - a.length)
-    .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replaceAll("_", "[_ ]?"));
   const match = new RegExp(`(?:^|[\\s,:;(])(${terms.join("|")})(?:\\s*(?:=|≈|:)\\s*|(?<=[).])\\s+(?=[+-]?\\d))`).exec(line);
   if (!match) return [];
   if (/[+*/=≈-]$/.test(line.slice(0, match.index).trim())) return [];
@@ -733,7 +736,8 @@ function matchAlias(rule, line) {
 }
 
 function evaluatePhotoExpression(text, variables = {}) {
-  const source = text.replace(/([ji])_([1-3])/g, "$1$2").replace(/\b(?:e|эдc)\b/g, "ε")
+  if (/\d\s+\d/.test(text)) return null;
+  const source = text.replace(/([ji])[_ ]([1-3])/g, "$1$2").replace(/\b(?:e|эдc)\b/g, "ε")
     .replace(/\b(ir|ri)\b/g, "i*r")
     .replace(/(?<=[\d)])\s*(?=[a-zε(])/g, "*").replace(/(?<=[a-zε])\s*(?=\()/g, "*")
     .replace(/\s+/g, "");
@@ -825,11 +829,12 @@ function numericSegment(segment, rule) {
 const photoStatusLabels = {
   good: "Совпало", bad: "Сверь расчёт", missing: "Не оценено", unit: "Сверь единицы",
   sign: "Сверь знак", direction: "Сверь направление", formula: "Сверь формулу", mixed: "Проверь записи",
+  uncertain: "Неразборчиво",
 };
 
 function formulaSegment(segment, rule) {
   // Check only explicit symbolic expressions, not a bare number or unfamiliar notation.
-  if (!rule.variables.some(variable => segment.replace(/_/g, "").includes(variable))) return null;
+  if (!rule.variables.some(variable => segment.replace(/[_ ]/g, "").includes(variable))) return null;
   const samples = [[2, 3, 5], [-4, 7, 3], [11, -3, 2], [1, 2, -6]];
   const comparisons = samples.map(values => {
     const variables = Object.fromEntries(rule.variables.map((symbol, index) => [symbol, values[index]]));
@@ -843,7 +848,7 @@ function formulaSegment(segment, rule) {
 
 function comparePhotoCriterion(rule, lines) {
   const matches = [];
-  for (const original of lines) {
+  for (const {text:original, confidence} of lines) {
     const line = normalizePhotoText(original);
     let status = null;
     if (rule.good) {
@@ -862,30 +867,52 @@ function comparePhotoCriterion(rule, lines) {
         if (last) status = numericSegment(last, rule);
       }
     }
-    if (status) matches.push({status, evidence: original.slice(0, 225)});
+    if (status) matches.push({status:Number.isFinite(confidence) && confidence < 65 ? "uncertain" : status,
+      evidence:original.slice(0, 225)});
   }
   if (!matches.length) return {status:"missing", evidence:""};
-  const first = matches[0];
-  return matches.every(item => item.status === first.status)
+  const reliable = matches.filter(item => item.status !== "uncertain");
+  if (!reliable.length) return matches[0];
+  const first = reliable[0];
+  return reliable.every(item => item.status === first.status)
     ? first
-    : {status:"mixed", evidence:matches.map(item => item.evidence).slice(0, 2).join(" / ")};
+    : {status:"mixed", evidence:reliable.map(item => item.evidence).slice(0, 2).join(" / ")};
 }
 
 function escapePhotoHtml(text) {
   return text.replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
 }
 
-function renderPhotoResults(task, text) {
-  const lines = text.split(/[\r\n;]/).map(line => line.trim()).filter(Boolean);
+function splitPhotoLines(text, confidence) {
+  return text.split(/[\r\n;]/).map(line => line.trim()).filter(Boolean)
+    .map(line => ({text:line, confidence}));
+}
+
+function recognizedPhotoLines(data) {
+  const lines = data.blocks?.flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines));
+  if (!lines?.length) return splitPhotoLines(data.text, data.confidence);
+  return lines.flatMap(line => {
+    const mathConfidence = line.words.filter(word => /[\d=≈+−-]/.test(word.text))
+      .map(word => word.confidence).filter(Number.isFinite);
+    return splitPhotoLines(line.text, Math.min(line.confidence, ...mathConfidence));
+  });
+}
+
+function renderPhotoResults(task, lines, automatic = false) {
   const results = task.photoCriteria.map(rule => ({rule, ...comparePhotoCriterion(rule, lines)}));
   const matched = results.filter(result => result.status === "good").length;
-  const missing = results.filter(result => result.status === "missing").length;
+  const missing = results.filter(result => ["missing", "uncertain"].includes(result.status)).length;
   $("photo-report-summary").textContent =
     `Совпало ${matched} · На сверку ${results.length - matched - missing} · Не оценено ${missing}`;
+  $("photo-report-help").textContent = automatic
+    ? "Предварительная проверка по фото. Сверь отмеченные строки со своим решением: при чтении фото могут потеряться минусы, индексы и дроби."
+    : "Проверка сверяет записанные формулы и результаты с учебными критериями задачи.";
   $("photo-results").innerHTML = results.map(({rule, status, evidence}) => {
     const example = rule.aliases?.[0];
     const body = status === "missing"
-      ? `Запись не найдена.${example ? ` Если величина есть в решении, подпиши её как ${example}.` : ""}`
+      ? automatic ? "Критерий не удалось проверить по распознанным строкам." :
+        `Запись не найдена.${example ? ` Если величина есть в решении, подпиши её как ${example}.` : ""}`
+      : status === "uncertain" ? "Сверь эту строку с фото и при необходимости поправь её в записи."
       : status === "mixed" ? "Есть разные записи. Уточни по фотографии, какая из них итоговая."
       : status === "good" ? "" : rule.hint;
     return `<li class="photo-result" data-status="${status}">
@@ -906,20 +933,20 @@ function releasePhoto() {
   const work = photoWork;
   photoWork = null;
   work?.abort();
-  selectedPhoto = null;
+  photoReady = false;
   if (photoUrl) URL.revokeObjectURL(photoUrl);
   photoUrl = "";
   photoPreview.hidden = true;
   photoPreview.removeAttribute("src");
-  photoRead.disabled = true;
+  photoRead.hidden = true;
   photoSubmit.disabled = false;
   photoText.readOnly = false;
-  photoInput.disabled = false;
 }
 
 function resetPhotoCheck() {
   releasePhoto();
   photoPanel.open = false;
+  $("photo-editor").open = false;
   photoInput.value = "";
   photoText.value = "";
   photoStatus.textContent = "";
@@ -932,6 +959,7 @@ function resetPhotoCheck() {
 photoInput.addEventListener("change", async () => {
   releasePhoto();
   clearPhotoReport();
+  $("photo-editor").open = false;
   photoText.value = "";
   photoStatus.textContent = "";
   const file = photoInput.files?.[0];
@@ -945,18 +973,20 @@ photoInput.addEventListener("change", async () => {
   const url = URL.createObjectURL(file);
   photoUrl = url;
   photoPreview.src = url;
+  photoStatus.textContent = "Открываю фото…";
   try {
     await photoPreview.decode();
-    if (photoUrl !== url) return;
-    selectedPhoto = file;
-    photoPreview.hidden = false;
-    photoRead.disabled = false;
   } catch {
     if (photoUrl !== url) return;
     releasePhoto();
     photoInput.value = "";
     photoStatus.textContent = "Браузер не прочитал фото. Выбери JPG, PNG или WebP.";
+    return;
   }
+  if (photoUrl !== url) return;
+  photoPreview.hidden = false;
+  photoReady = true;
+  await checkPhoto();
 });
 
 function loadOcr() {
@@ -990,14 +1020,14 @@ function preparePhoto() {
   return canvas;
 }
 
-photoRead.addEventListener("click", async () => {
-  if (!selectedPhoto || photoWork) return;
+async function checkPhoto() {
+  const task = problems.find(problem => problem.id === currentId);
+  if (!photoReady || photoWork || !task) return;
   const controller = new AbortController();
   photoWork = controller;
-  photoRead.disabled = true;
+  photoRead.hidden = true;
   photoSubmit.disabled = true;
   photoText.readOnly = true;
-  photoInput.disabled = true;
   photoStatus.textContent = "Загружаю распознавание…";
   clearPhotoReport();
   let worker;
@@ -1008,7 +1038,7 @@ photoRead.addEventListener("click", async () => {
   });
   async function readImage() {
     const engine = await loadOcr();
-    if (controller.signal.aborted) return "";
+    if (controller.signal.aborted) return null;
     const canvas = preparePhoto();
     worker = await engine.createWorker(["rus", "eng"], 1, {
       workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js",
@@ -1022,52 +1052,57 @@ photoRead.addEventListener("click", async () => {
         if (photoWork === controller) controller.abort();
       },
     });
-    if (controller.signal.aborted) return worker.terminate().then(() => "");
-    const {data} = await worker.recognize(canvas);
-    return data.text.trim().slice(0, 14000);
+    if (controller.signal.aborted) return worker.terminate().then(() => null);
+    const {data} = await worker.recognize(canvas, {}, {text:true, blocks:true});
+    return data;
   }
   try {
-    const text = await Promise.race([readImage(), abort]);
+    const data = await Promise.race([readImage(), abort]);
     if (photoWork !== controller) return;
+    const text = data?.text.trim().slice(0, 14000);
     if (!text) {
-      photoStatus.textContent = "Запись не удалось распознать. Можно вписать формулы вручную.";
+      photoStatus.textContent = "Запись не удалось прочитать. Попробуй более чёткое фото или введи формулы в разделе ниже.";
+      photoRead.hidden = false;
       return;
     }
     photoText.value = text;
-    photoStatus.textContent = "Сверь текст с фотографией. Проверь минусы, индексы и дроби.";
-    photoText.focus({preventScroll:true});
+    renderPhotoResults(task, recognizedPhotoLines(data), true);
+    photoStatus.textContent = "Проверка по фото готова.";
   } catch {
-    if (photoWork === controller && selectedPhoto) {
+    if (photoWork === controller) {
+      photoRead.hidden = false;
       photoStatus.textContent = timedOut
-        ? "Распознавание заняло слишком много времени. Можно повторить попытку или вписать формулы."
-        : "Распознавание не запустилось. Можно повторить попытку или вписать формулы.";
+        ? "Распознавание заняло слишком много времени. Повтори проверку или введи формулы."
+        : "Распознавание не запустилось. Повтори проверку или введи формулы.";
     }
   } finally {
     clearTimeout(stop);
     if (worker) void worker.terminate();
     if (photoWork === controller) {
       photoWork = null;
-      photoRead.disabled = !selectedPhoto;
       photoSubmit.disabled = false;
       photoText.readOnly = false;
-      photoInput.disabled = false;
     }
   }
-});
+}
+photoRead.addEventListener("click", checkPhoto);
 
-photoText.addEventListener("input", clearPhotoReport);
+photoText.addEventListener("input", () => {
+  photoStatus.textContent = "";
+  clearPhotoReport();
+});
 $("photo-form").addEventListener("submit", event => {
   event.preventDefault();
   const task = problems.find(problem => problem.id === currentId);
   if (!task || photoWork) return;
   const text = photoText.value.trim();
   if (!text) {
-    photoStatus.textContent = "Сначала распознай фото или запиши несколько строк решения.";
-    (selectedPhoto ? photoRead : photoText).focus();
+    photoStatus.textContent = "Введи несколько строк решения или выбери фото.";
+    photoText.focus();
     return;
   }
   photoStatus.textContent = "";
-  renderPhotoResults(task, text);
+  renderPhotoResults(task, splitPhotoLines(text));
   $("photo-report-summary").focus({preventScroll:true});
 });
 
